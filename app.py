@@ -65,10 +65,19 @@ def to_pdf(df):
 with st.sidebar.expander("🛠️ Admin: Initialize Database"):
     st.write("Upload the original CSV to populate the database for the first time.")
     uploaded_file = st.file_uploader("Upload CSV", type="csv")
+    
     if uploaded_file and st.button("Initialize DB"):
-        df_init = pd.read_csv(uploaded_file, skiprows=10)
+        try:
+            # Try reading with standard UTF-8 encoding first
+            df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='utf-8')
+        except UnicodeDecodeError:
+            # If that fails (e.g., CSV was saved from MS Excel), fall back to Windows encoding
+            uploaded_file.seek(0)  # Reset the file pointer to the beginning
+            df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='cp1252')
+            
         df_init["Project Status"] = "Not Started"
         df_init["Weekly Update"] = ""
+        
         # Save to centralized database
         df_init.to_sql("project_items", con=engine, if_exists="replace", index=False)
         st.success("Database Initialized! Refresh the page.")
