@@ -91,12 +91,19 @@ with st.sidebar.expander("🛠️ Admin: Initialize Database"):
 df = load_data()
 
 if not df.empty:
+    
+    # ---- ADD THIS SAFEGUARD CODE ----
+    if 'Implementation Category' not in df.columns:
+        st.error("🚨 Column Not Found!")
+        st.write("The app couldn't find `'Implementation Category'`. Here are the columns it *did* find in your database:")
+        st.code(df.columns.tolist())
+        st.info("💡 **Fix:** If you deleted the Legend at the top of your file, change `skiprows=10` to `skiprows=0` in the file upload code above, then re-upload your file via the Admin panel!")
+        st.stop() # This stops the app from crashing below
+    # ---------------------------------
+    
     st.sidebar.subheader("Filters")
     categories = df['Implementation Category'].dropna().unique().tolist()
-    selected_cat = st.sidebar.multiselect("Filter by Category", categories, default=categories)
-    filtered_df = df[df['Implementation Category'].isin(selected_cat)]
-
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📋 Kanban", "✍️ Collaborate & Update", "📄 Export"])
+    # ... rest of the code remains the same ...
 
     # -- TAB 1: DASHBOARD --
     with tab1:
