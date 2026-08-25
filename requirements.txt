@@ -1,1 +1,4 @@
 plotly
+fpdf
+sqlalchemy
+pandas
