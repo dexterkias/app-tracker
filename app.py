@@ -68,10 +68,35 @@ else:
     safe_table_name = "tab_" + "".join([c if c.isalnum() else "_" for c in selected_tab]).lower()
     df = pd.read_sql(f"SELECT * FROM {safe_table_name}", con=engine)
     
-    # --- Dynamic UI based on columns ---
+    # --- Dynamic Feature Detection ---
     has_category = 'Implementation Category' in df.columns
-    has_status = 'Project Status' in df.columns
     
+    # Identify dynamic columns
+    status_col = next((c for c in df.columns if str(c).strip().lower() in ['status', 'project status', 'action status', 'task status']), None)
+    deadline_col = next((c for c in df.columns if str(c).strip().lower() in ['deadline', 'due date', 'target date']), None)
+    
+    # Calculate Overdue Automatically
+    if deadline_col:
+        df[deadline_col] = pd.to_datetime(df[deadline_col], errors='coerce')
+        today = pd.Timestamp.now().normalize()
+        
+        def calc_overdue(row):
+            # If completed, it's not overdue
+            if status_col and pd.notna(row.get(status_col)):
+                v = str(row[status_col]).lower()
+                if 'complete' in v or 'close' in v or 'done' in v:
+                    return "Completed"
+            
+            # Check date
+            if pd.isna(row.get(deadline_col)):
+                return ""
+            days = (today - row[deadline_col]).days
+            if days > 0:
+                return f"🚨 {days} Days Overdue"
+            return "On Track"
+            
+        df["Overdue Status"] = df.apply(calc_overdue, axis=1)
+
     tab1, tab2, tab3 = st.tabs(["✍️ Collaborate & Update", "📊 Dashboard", "📄 Export Sheet"])
     
     # -- TAB 1: COLLABORATE --
@@ -79,55 +104,107 @@ else:
         st.header(f"Editing: {selected_tab}")
         st.write("Changes made here are saved to the live database for all users.")
         
-        # Determine column configurations dynamically
+        # Configure Dropdowns
         col_config = {}
-        if has_status:
-            col_config["Project Status"] = st.column_config.SelectboxColumn("Project Status", options=["Not Started", "In Progress", "Completed"])
+        if status_col:
+            existing_opts = [x for x in df[status_col].dropna().unique()]
+            standard_opts = ["Not Started", "Open", "In Progress", "Delayed", "Completed", "Closed"]
+            options = list(set(existing_opts + standard_opts))
+            col_config[status_col] = st.column_config.SelectboxColumn(status_col, options=options)
+            
         if 'Weekly Update' in df.columns:
             col_config["Weekly Update"] = st.column_config.TextColumn("Weekly Update")
             
-        edited_df = st.data_editor(df, use_container_width=True, column_config=col_config, hide_index=True)
+        if deadline_col and "Overdue Status" in df.columns:
+            col_config["Overdue Status"] = st.column_config.TextColumn("Overdue Status", disabled=True)
+
+        # Apply Colors
+        def style_dataframe(styler):
+            if status_col:
+                def color_status(val):
+                    v = str(val).lower()
+                    if 'complete' in v or 'close' in v or 'done' in v:
+                        return 'background-color: #d4edda; color: #155724; font-weight: bold;'
+                    elif 'progress' in v or 'ongoing' in v or 'open' in v:
+                        return 'background-color: #cce5ff; color: #004085; font-weight: bold;'
+                    elif 'delay' in v or 'overdue' in v:
+                        return 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+                    elif 'not start' in v or 'new' in v:
+                        return 'background-color: #e2e3e5; color: #383d41;'
+                    return ''
+                styler = styler.map(color_status, subset=[status_col])
+                
+            if deadline_col and "Overdue Status" in df.columns:
+                def color_overdue(val):
+                    if '🚨' in str(val):
+                        return 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+                    elif val == 'On Track' or val == 'Completed':
+                        return 'color: #155724;'
+                    return ''
+                styler = styler.map(color_overdue, subset=['Overdue Status'])
+            return styler
+
+        # Display Data Editor with styling
+        styled_df = df.style.pipe(style_dataframe)
+        edited_df = st.data_editor(styled_df, use_container_width=True, column_config=col_config, hide_index=True)
         
         if st.button("💾 Save Updates to Database"):
             try:
-                edited_df.to_sql(safe_table_name, con=engine, if_exists="replace", index=False)
+                # Strip out the styling and dynamic calculation before saving back to SQL
+                # The user's edits are in edited_df
+                save_df = edited_df.copy()
+                if deadline_col and "Overdue Status" in save_df.columns:
+                    save_df.drop(columns=["Overdue Status"], inplace=True)
+                
+                save_df.to_sql(safe_table_name, con=engine, if_exists="replace", index=False)
                 st.success(f"Updates to '{selected_tab}' successfully saved to the live database!")
+                st.rerun() # Refresh to recalculate overdue metrics
             except Exception as e:
                 st.error(f"Failed to save: {e}")
 
     # -- TAB 2: DASHBOARD --
     with tab2:
-        if has_status:
+        if status_col:
             st.subheader(f"Progress Overview: {selected_tab}")
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Items", len(df))
-            c2.metric("Completed", len(df[df["Project Status"] == "Completed"]))
-            c3.metric("In Progress", len(df[df["Project Status"] == "In Progress"]))
+            
+            # Dynamic completion matching
+            completed_count = len(df[df[status_col].astype(str).str.lower().str.contains('complete|close|done', na=False)])
+            in_progress_count = len(df[df[status_col].astype(str).str.lower().str.contains('progress|ongoing|open', na=False)])
+            
+            c2.metric("Completed/Closed", completed_count)
+            c3.metric("In Progress/Open", in_progress_count)
             
             st.markdown("---")
             col_chart1, col_chart2 = st.columns(2)
             
             with col_chart1:
-                fig1 = px.pie(df, names='Project Status', title="Status Distribution", hole=0.3)
+                fig1 = px.pie(df, names=status_col, title="Status Distribution", hole=0.3)
                 st.plotly_chart(fig1, use_container_width=True)
                 
             with col_chart2:
-                # If it's the main infrastructure tab, show the category breakdown
                 if has_category:
-                    status_by_cat = df.groupby(['Implementation Category', 'Project Status']).size().reset_index(name='Count')
-                    fig2 = px.bar(status_by_cat, x='Implementation Category', y='Count', color='Project Status', title="Status by Category")
+                    status_by_cat = df.groupby(['Implementation Category', status_col]).size().reset_index(name='Count')
+                    fig2 = px.bar(status_by_cat, x='Implementation Category', y='Count', color=status_col, title="Status by Category")
+                    st.plotly_chart(fig2, use_container_width=True)
+                elif 'Assigned To' in df.columns or 'Owner' in df.columns:
+                    # Fallback chart for Action trackers
+                    owner_col = 'Assigned To' if 'Assigned To' in df.columns else 'Owner'
+                    status_by_owner = df.groupby([owner_col, status_col]).size().reset_index(name='Count')
+                    fig2 = px.bar(status_by_owner, x=owner_col, y='Count', color=status_col, title=f"Status by {owner_col}")
                     st.plotly_chart(fig2, use_container_width=True)
                 else:
-                    st.info("Chart 'Status by Category' is hidden because this tab does not contain an 'Implementation Category' column.")
+                    st.info("Additional charts are hidden because this tab doesn't have an 'Implementation Category' or 'Owner' column.")
         else:
-            st.info("This tab does not have a 'Project Status' column, so no dashboard is available.")
+            st.info("This tab does not have a recognizable Status column, so no dashboard is available.")
 
     # -- TAB 3: EXPORT --
     with tab3:
         st.subheader(f"Export Data for '{selected_tab}'")
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            edited_df.to_excel(writer, index=False, sheet_name=selected_tab[:30]) # Sheet names max 31 chars
+            edited_df.to_excel(writer, index=False, sheet_name=selected_tab[:30])
             
         st.download_button(
             label="📥 Download current tab as Excel",
