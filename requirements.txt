@@ -1,4 +1,7 @@
+streamlit
+pandas
 plotly
 fpdf
-sqlalchemy
-pandas
+openpyxl
+SQLAlchemy
+psycopg2-binary
