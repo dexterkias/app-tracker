@@ -68,16 +68,24 @@ with st.sidebar.expander("🛠️ Admin: Initialize Database"):
     
     if uploaded_file and st.button("Initialize DB"):
         try:
-            # 1. Try UTF-8 with signature (safely handles hidden Byte-Order-Marks)
-            df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='utf-8-sig')
-        except UnicodeDecodeError:
-            # 2. Bulletproof Fallback: read with latin1 and force-replace any broken characters
-            uploaded_file.seek(0)  # Reset the file pointer
+            # Added engine='python' and on_bad_lines='skip' to bypass broken commas/quotes
+            df_init = pd.read_csv(
+                uploaded_file, 
+                skiprows=10, 
+                encoding='utf-8-sig',
+                engine='python',
+                on_bad_lines='skip'
+            )
+        except Exception:
+            # Ultimate fallback if absolutely everything fails
+            uploaded_file.seek(0) 
             df_init = pd.read_csv(
                 uploaded_file, 
                 skiprows=10, 
                 encoding='latin1', 
-                encoding_errors='replace'
+                encoding_errors='replace',
+                engine='python',
+                on_bad_lines='skip'
             )
             
         df_init["Project Status"] = "Not Started"
