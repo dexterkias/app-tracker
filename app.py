@@ -68,33 +68,24 @@ with st.sidebar.expander("🛠️ Admin: Initialize Database"):
     
     if uploaded_file and st.button("Initialize DB"):
         try:
-            # Added engine='python' and on_bad_lines='skip' to bypass broken commas/quotes
-            df_init = pd.read_csv(
-                uploaded_file, 
-                skiprows=10, 
-                encoding='utf-8-sig',
-                engine='python',
-                on_bad_lines='skip'
-            )
+            # Parse the CSV
+            df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='utf-8-sig', engine='python', on_bad_lines='skip')
         except Exception:
-            # Ultimate fallback if absolutely everything fails
             uploaded_file.seek(0) 
-            df_init = pd.read_csv(
-                uploaded_file, 
-                skiprows=10, 
-                encoding='latin1', 
-                encoding_errors='replace',
-                engine='python',
-                on_bad_lines='skip'
-            )
+            df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='latin1', encoding_errors='replace', engine='python', on_bad_lines='skip')
             
         df_init["Project Status"] = "Not Started"
         df_init["Weekly Update"] = ""
         
-        # Save to centralized database
-        df_init.to_sql("project_items", con=engine, if_exists="replace", index=False)
-        st.success("Database Initialized! Refresh the page.")
-        st.rerun()
+        try:
+            # Try to save to the database
+            df_init.to_sql("project_items", con=engine, if_exists="replace", index=False)
+            st.success("Database Initialized! Refresh the page.")
+            st.rerun()
+        except Exception as e:
+            # Safely print the EXACT error so we know what's wrong!
+            st.error(f"❌ Database Connection Failed. Here is the exact reason:")
+            st.code(str(e))
 
 # --- Main Application UI ---
 df = load_data()
