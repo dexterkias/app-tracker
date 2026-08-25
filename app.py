@@ -63,29 +63,29 @@ def to_pdf(df):
 
 # --- Admin: Initialize Database ---
 with st.sidebar.expander("🛠️ Admin: Initialize Database"):
-    st.write("Upload the original CSV to populate the database for the first time.")
-    uploaded_file = st.file_uploader("Upload CSV", type="csv")
+    st.write("Upload the original CSV or Excel file to populate the database.")
+    # Notice we now accept .xlsx files!
+    uploaded_file = st.file_uploader("Upload Tracker", type=["csv", "xlsx"])
     
     if uploaded_file and st.button("Initialize DB"):
         try:
-            # Parse the CSV
-            df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='utf-8-sig', engine='python', on_bad_lines='skip')
-        except Exception:
-            uploaded_file.seek(0) 
-            df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='latin1', encoding_errors='replace', engine='python', on_bad_lines='skip')
+            # If it's an Excel file, use read_excel
+            if uploaded_file.name.endswith('.xlsx'):
+                df_init = pd.read_excel(uploaded_file, skiprows=10)
+            else:
+                # If it's a CSV, use our robust CSV reader
+                df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='utf-8-sig', engine='python', on_bad_lines='skip')
+                
+            df_init["Project Status"] = "Not Started"
+            df_init["Weekly Update"] = ""
             
-        df_init["Project Status"] = "Not Started"
-        df_init["Weekly Update"] = ""
-        
-        try:
-            # Try to save to the database
+            # Save to centralized database
             df_init.to_sql("project_items", con=engine, if_exists="replace", index=False)
             st.success("Database Initialized! Refresh the page.")
             st.rerun()
+            
         except Exception as e:
-            # Safely print the EXACT error so we know what's wrong!
-            st.error(f"❌ Database Connection Failed. Here is the exact reason:")
-            st.code(str(e))
+            st.error(f"❌ Could not process the file. Error details:\n\n{e}")
 
 # --- Main Application UI ---
 df = load_data()
