@@ -68,12 +68,17 @@ with st.sidebar.expander("🛠️ Admin: Initialize Database"):
     
     if uploaded_file and st.button("Initialize DB"):
         try:
-            # Try reading with standard UTF-8 encoding first
-            df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='utf-8')
+            # 1. Try UTF-8 with signature (safely handles hidden Byte-Order-Marks)
+            df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='utf-8-sig')
         except UnicodeDecodeError:
-            # If that fails (e.g., CSV was saved from MS Excel), fall back to Windows encoding
-            uploaded_file.seek(0)  # Reset the file pointer to the beginning
-            df_init = pd.read_csv(uploaded_file, skiprows=10, encoding='cp1252')
+            # 2. Bulletproof Fallback: read with latin1 and force-replace any broken characters
+            uploaded_file.seek(0)  # Reset the file pointer
+            df_init = pd.read_csv(
+                uploaded_file, 
+                skiprows=10, 
+                encoding='latin1', 
+                encoding_errors='replace'
+            )
             
         df_init["Project Status"] = "Not Started"
         df_init["Weekly Update"] = ""
