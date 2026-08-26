@@ -114,7 +114,7 @@ else:
     deadline_col = next((c for c in df.columns if str(c).strip().lower() in ['deadline', 'due date', 'target date']), None)
     
     # Process date columns
-    date_cols = [c for c in df.columns if 'date' in str(c).lower() or 'deadline' in str(c).lower()]
+    date_cols = [c for c in df.columns if ('date' in str(c).lower() and 'update' not in str(c).lower()) or 'deadline' in str(c).lower()]
     for dc in date_cols:
         df[dc] = pd.to_datetime(df[dc], errors='coerce').dt.date
 
