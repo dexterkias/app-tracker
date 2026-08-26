@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from io import BytesIO
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text, inspect
 import datetime
 
 # --- Page Configuration ---
@@ -14,21 +14,21 @@ db_url = st.secrets.get("DATABASE_URL", "sqlite:///project_data.db")
 engine = create_engine(db_url)
 
 # --- Admin: Initialize Multi-Tab Database ---
-with st.sidebar.expander("🛠️ Admin: Initialize Database"):
+with st.sidebar.expander("🛠️ Admin: Database Controls"):
     st.write("Upload your multi-tab Excel file (`RTMC_Trackers.xlsx`).")
     uploaded_file = st.file_uploader("Upload Excel Tracker", type=["xlsx"])
     
     # Let the admin decide where the headers are (default 10 for the legend)
     header_row = st.number_input("How many legend rows to skip?", min_value=0, max_value=50, value=10, help="0 if headers are on Row 1. 10 if headers are on Row 11.")
     
-    if uploaded_file and st.button("🚀 Initialize All Tabs"):
+    if uploaded_file and st.button("🚀 Initialize / Refresh All Tabs"):
         try:
             xls = pd.ExcelFile(uploaded_file)
             
             # Save the list of tabs to a master index table
             pd.DataFrame({'tab_name': xls.sheet_names}).to_sql('app_tabs_index', con=engine, if_exists='replace', index=False)
             
-            # Loop through all 13 tabs and save them individually
+            # Loop through all tabs and save them individually
             progress_bar = st.progress(0)
             for i, sheet in enumerate(xls.sheet_names):
                 df_init = pd.read_excel(xls, sheet_name=sheet, skiprows=header_row)
@@ -41,14 +41,40 @@ with st.sidebar.expander("🛠️ Admin: Initialize Database"):
                 
                 # Sanitize table name for SQL
                 safe_table_name = "tab_" + "".join([c if c.isalnum() else "_" for c in sheet]).lower()
+                
+                # Intelligent Refresh: Merge existing user updates if the data has changed
+                try:
+                    existing_df = pd.read_sql(f"SELECT * FROM {safe_table_name}", con=engine)
+                    pk = df_init.columns[0]
+                    if pk in existing_df.columns:
+                        status_map = existing_df.set_index(pk)['Project Status'].to_dict()
+                        update_map = existing_df.set_index(pk)['Weekly Update'].to_dict()
+                        df_init['Project Status'] = df_init[pk].map(status_map).fillna(df_init['Project Status'])
+                        df_init['Weekly Update'] = df_init[pk].map(update_map).fillna(df_init['Weekly Update'])
+                except Exception:
+                    pass
+                
                 df_init.to_sql(safe_table_name, con=engine, if_exists="replace", index=False)
                 
                 # Update progress
                 progress_bar.progress((i + 1) / len(xls.sheet_names))
                 
-            st.success("✅ All tabs successfully initialized! Please refresh the page.")
+            st.success("✅ All tabs successfully initialized & refreshed! Please refresh the page.")
         except Exception as e:
             st.error(f"❌ Error initializing database:\n\n{e}")
+
+    st.markdown("---")
+    st.write("**Danger Zone**")
+    if st.button("🗑️ Clear Entire Database"):
+        try:
+            inspector = inspect(engine)
+            with engine.begin() as conn:
+                for table_name in inspector.get_table_names():
+                    conn.execute(text(f"DROP TABLE {table_name}"))
+            st.success("✅ Database cleared!")
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Error clearing database: {e}")
 
 # --- Load Available Tabs ---
 try:
@@ -68,6 +94,18 @@ else:
     safe_table_name = "tab_" + "".join([c if c.isalnum() else "_" for c in selected_tab]).lower()
     df = pd.read_sql(f"SELECT * FROM {safe_table_name}", con=engine)
     
+    st.sidebar.markdown("---")
+    st.sidebar.write("**Tab Management**")
+    if st.sidebar.button(f"🗑️ Delete '{selected_tab}' Data"):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"DROP TABLE {safe_table_name}"))
+                conn.execute(text(f"DELETE FROM app_tabs_index WHERE tab_name = :t"), {"t": selected_tab})
+            st.sidebar.success(f"Deleted {selected_tab}")
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"Error deleting tab: {e}")
+
     # --- Dynamic Feature Detection ---
     has_category = 'Implementation Category' in df.columns
     
@@ -75,10 +113,14 @@ else:
     status_col = next((c for c in df.columns if str(c).strip().lower() in ['status', 'project status', 'action status', 'task status']), None)
     deadline_col = next((c for c in df.columns if str(c).strip().lower() in ['deadline', 'due date', 'target date']), None)
     
+    # Process date columns
+    date_cols = [c for c in df.columns if 'date' in str(c).lower() or 'deadline' in str(c).lower()]
+    for dc in date_cols:
+        df[dc] = pd.to_datetime(df[dc], errors='coerce').dt.date
+
     # Calculate Overdue Automatically
     if deadline_col:
-        df[deadline_col] = pd.to_datetime(df[deadline_col], errors='coerce')
-        today = pd.Timestamp.now().normalize()
+        today = pd.Timestamp.now().normalize().date()
         
         def calc_overdue(row):
             # If completed, it's not overdue
@@ -97,15 +139,18 @@ else:
             
         df["Overdue Status"] = df.apply(calc_overdue, axis=1)
 
-    tab1, tab2, tab3 = st.tabs(["✍️ Collaborate & Update", "📊 Dashboard", "📄 Export Sheet"])
+    tab1, tab2, tab3, tab4 = st.tabs(["✍️ Collaborate & Update", "📋 Kanban Board", "📊 Dashboard", "📄 Export Sheet"])
     
     # -- TAB 1: COLLABORATE --
     with tab1:
         st.header(f"Editing: {selected_tab}")
         st.write("Changes made here are saved to the live database for all users.")
         
-        # Configure Dropdowns
+        # Configure Dropdowns and Dates
         col_config = {}
+        for dc in date_cols:
+            col_config[dc] = st.column_config.DateColumn(dc, format="YYYY-MM-DD")
+            
         if status_col:
             existing_opts = [x for x in df[status_col].dropna().unique()]
             standard_opts = ["Not Started", "Open", "In Progress", "Delayed", "Completed", "Closed"]
@@ -162,8 +207,33 @@ else:
             except Exception as e:
                 st.error(f"Failed to save: {e}")
 
-    # -- TAB 2: DASHBOARD --
+    # -- TAB 2: KANBAN --
     with tab2:
+        st.subheader(f"Kanban Board: {selected_tab}")
+        if status_col:
+            statuses = df[status_col].fillna("No Status").unique()
+            if len(statuses) > 0:
+                cols = st.columns(len(statuses))
+                for i, status in enumerate(statuses):
+                    with cols[i]:
+                        st.markdown(f"### {status}")
+                        status_df = df[df[status_col].fillna("No Status") == status]
+                        for _, row in status_df.iterrows():
+                            title_col = df.columns[0]
+                            with st.container(border=True):
+                                st.write(f"**{row[title_col]}**")
+                                if deadline_col and pd.notna(row.get(deadline_col)):
+                                    st.caption(f"📅 {row[deadline_col]}")
+                                owner_col = next((c for c in df.columns if 'Assigned' in str(c) or 'Owner' in str(c)), None)
+                                if owner_col and pd.notna(row.get(owner_col)):
+                                    st.caption(f"👤 {row[owner_col]}")
+            else:
+                st.info("No tasks to display.")
+        else:
+            st.info("No status column found for Kanban board.")
+
+    # -- TAB 3: DASHBOARD --
+    with tab3:
         if status_col:
             st.subheader(f"Progress Overview: {selected_tab}")
             c1, c2, c3 = st.columns(3)
@@ -180,31 +250,43 @@ else:
             col_chart1, col_chart2 = st.columns(2)
             
             with col_chart1:
-                fig1 = px.pie(df, names=status_col, title="Status Distribution", hole=0.3)
+                fig1 = px.pie(df, names=status_col, title="Status Distribution", hole=0.4,
+                              color_discrete_sequence=px.colors.qualitative.Pastel)
+                fig1.update_traces(textposition='inside', textinfo='percent+label')
+                fig1.update_layout(showlegend=False, margin=dict(t=40, b=0, l=0, r=0))
                 st.plotly_chart(fig1, use_container_width=True)
                 
             with col_chart2:
                 if has_category:
                     status_by_cat = df.groupby(['Implementation Category', status_col]).size().reset_index(name='Count')
-                    fig2 = px.bar(status_by_cat, x='Implementation Category', y='Count', color=status_col, title="Status by Category")
+                    fig2 = px.bar(status_by_cat, x='Implementation Category', y='Count', color=status_col, 
+                                  title="Status by Category", text_auto=True,
+                                  color_discrete_sequence=px.colors.qualitative.Pastel)
+                    fig2.update_layout(barmode='stack', margin=dict(t=40, b=0, l=0, r=0))
                     st.plotly_chart(fig2, use_container_width=True)
                 elif 'Assigned To' in df.columns or 'Owner' in df.columns:
                     # Fallback chart for Action trackers
                     owner_col = 'Assigned To' if 'Assigned To' in df.columns else 'Owner'
                     status_by_owner = df.groupby([owner_col, status_col]).size().reset_index(name='Count')
-                    fig2 = px.bar(status_by_owner, x=owner_col, y='Count', color=status_col, title=f"Status by {owner_col}")
+                    fig2 = px.bar(status_by_owner, x=owner_col, y='Count', color=status_col, 
+                                  title=f"Status by {owner_col}", text_auto=True,
+                                  color_discrete_sequence=px.colors.qualitative.Pastel)
+                    fig2.update_layout(barmode='stack', margin=dict(t=40, b=0, l=0, r=0))
                     st.plotly_chart(fig2, use_container_width=True)
                 else:
                     st.info("Additional charts are hidden because this tab doesn't have an 'Implementation Category' or 'Owner' column.")
         else:
             st.info("This tab does not have a recognizable Status column, so no dashboard is available.")
 
-    # -- TAB 3: EXPORT --
-    with tab3:
+    # -- TAB 4: EXPORT --
+    with tab4:
         st.subheader(f"Export Data for '{selected_tab}'")
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            edited_df.to_excel(writer, index=False, sheet_name=selected_tab[:30])
+            export_df = edited_df.copy()
+            if "Overdue Status" in export_df.columns:
+                export_df = export_df.drop(columns=["Overdue Status"])
+            export_df.to_excel(writer, index=False, sheet_name=selected_tab[:30])
             
         st.download_button(
             label="📥 Download current tab as Excel",
